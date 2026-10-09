@@ -30,13 +30,10 @@ import type {
 ====================================================== */
 
 function getVisitorId(): string {
-  const key =
-    "medha_visitor_id";
+  const key = "medha_visitor_id";
 
   const existing =
-    localStorage.getItem(
-      key
-    );
+    localStorage.getItem(key);
 
   if (existing) {
     return existing;
@@ -105,9 +102,31 @@ export default function Chat() {
     setSearch,
   ] = useState("");
 
+  /*
+   * isGenerating:
+   * True for the entire lifetime of the request.
+   *
+   * Used for:
+   * - stop button
+   * - preventing duplicate sends
+   * - preventing conversation switching
+   */
   const [
     isGenerating,
     setIsGenerating,
+  ] = useState(false);
+
+  /*
+   * isThinking:
+   * True only while waiting for the first
+   * actual assistant text.
+   *
+   * As soon as the first response text arrives,
+   * this becomes false.
+   */
+  const [
+    isThinking,
+    setIsThinking,
   ] = useState(false);
 
   const [
@@ -149,9 +168,7 @@ export default function Chat() {
 
     setVisitorId(id);
 
-    void loadConversations(
-      id
-    );
+    void loadConversations(id);
   }, []);
 
 
@@ -173,8 +190,7 @@ export default function Chat() {
             id
           )}`,
           {
-            cache:
-              "no-store",
+            cache: "no-store",
           }
         );
 
@@ -190,9 +206,9 @@ export default function Chat() {
         await response.json();
 
       setConversations(
-        data.conversations ||
-        []
+        data.conversations || []
       );
+
     } catch (error) {
       console.error(
         "LOAD CONVERSATIONS ERROR:",
@@ -225,8 +241,7 @@ export default function Chat() {
             id
           )}`,
           {
-            cache:
-              "no-store",
+            cache: "no-store",
           }
         );
 
@@ -244,9 +259,7 @@ export default function Chat() {
       /*
        * Update state and ref.
        */
-      setConversationId(
-        id
-      );
+      setConversationId(id);
 
       conversationIdRef.current =
         id;
@@ -255,14 +268,13 @@ export default function Chat() {
         data.messages || []
       );
 
-      setSidebarOpen(
-        false
-      );
+      setSidebarOpen(false);
 
       setScrollSignal(
         (value) =>
           value + 1
       );
+
     } catch (error) {
       console.error(
         "OPEN CONVERSATION ERROR:",
@@ -295,8 +307,7 @@ export default function Chat() {
             id
           )}`,
           {
-            method:
-              "DELETE",
+            method: "DELETE",
           }
         );
 
@@ -312,6 +323,7 @@ export default function Chat() {
             errorMessage =
               data.error;
           }
+
         } catch {
           // Keep default message.
         }
@@ -320,7 +332,6 @@ export default function Chat() {
           errorMessage
         );
       }
-
 
       /*
        * If the deleted conversation
@@ -333,13 +344,10 @@ export default function Chat() {
         conversationIdRef.current =
           null;
 
-        setConversationId(
-          null
-        );
+        setConversationId(null);
 
         setMessages([]);
       }
-
 
       /*
        * Update sidebar immediately.
@@ -348,11 +356,9 @@ export default function Chat() {
         (previous) =>
           previous.filter(
             (conversation) =>
-              conversation.id !==
-              id
+              conversation.id !== id
           )
       );
-
 
       /*
        * Refresh from database to ensure
@@ -383,23 +389,19 @@ export default function Chat() {
     if (
       !visitorId ||
       isGenerating ||
-      conversations.length ===
-      0
+      conversations.length === 0
     ) {
       return;
     }
-
 
     const confirmed =
       window.confirm(
         "Delete all conversations? This cannot be undone."
       );
 
-
     if (!confirmed) {
       return;
     }
-
 
     try {
       const response =
@@ -408,11 +410,9 @@ export default function Chat() {
             visitorId
           )}`,
           {
-            method:
-              "DELETE",
+            method: "DELETE",
           }
         );
-
 
       if (!response.ok) {
         let errorMessage =
@@ -426,6 +426,7 @@ export default function Chat() {
             errorMessage =
               data.error;
           }
+
         } catch {
           // Keep default message.
         }
@@ -435,54 +436,41 @@ export default function Chat() {
         );
       }
 
-
       /*
        * Reset conversation reference.
        */
       conversationIdRef.current =
         null;
 
-
       /*
        * Reset active conversation.
        */
-      setConversationId(
-        null
-      );
-
+      setConversationId(null);
 
       /*
        * Remove current messages.
        */
       setMessages([]);
 
-
       /*
        * Clear Recents immediately.
        */
       setConversations([]);
-
 
       /*
        * Clear sidebar search.
        */
       setSearch("");
 
-
       /*
        * Return to normal assistant mode.
        */
-      setMode(
-        "assistant"
-      );
-
+      setMode("assistant");
 
       /*
        * Close mobile sidebar.
        */
-      setSidebarOpen(
-        false
-      );
+      setSidebarOpen(false);
 
     } catch (error) {
       console.error(
@@ -511,17 +499,15 @@ export default function Chat() {
     conversationIdRef.current =
       null;
 
-    setConversationId(
-      null
-    );
+    setConversationId(null);
 
     setMessages([]);
 
     setSearch("");
 
-    setSidebarOpen(
-      false
-    );
+    setSidebarOpen(false);
+
+    setIsThinking(false);
   }
 
 
@@ -536,22 +522,18 @@ export default function Chat() {
       return;
     }
 
-    setMode(
-      nextMode
-    );
+    setMode(nextMode);
 
     conversationIdRef.current =
       null;
 
-    setConversationId(
-      null
-    );
+    setConversationId(null);
 
     setMessages([]);
 
-    setSidebarOpen(
-      false
-    );
+    setSidebarOpen(false);
+
+    setIsThinking(false);
   }
 
 
@@ -571,10 +553,8 @@ export default function Chat() {
       return;
     }
 
-
     const cleanText =
       text.trim();
-
 
     if (!cleanText) {
       return;
@@ -588,7 +568,6 @@ export default function Chat() {
     const userMessageId =
       crypto.randomUUID();
 
-
     /*
      * What the user sees.
      *
@@ -596,46 +575,31 @@ export default function Chat() {
      * label while sending a longer prompt
      * to the model.
      */
-    const visibleUserMessage: Message =
-    {
-      id:
-        userMessageId,
-
-      role:
-        "user",
-
+    const visibleUserMessage: Message = {
+      id: userMessageId,
+      role: "user",
       content:
         displayText ||
         cleanText,
     };
 
-
     /*
      * What the model receives.
      */
-    const modelUserMessage: Message =
-    {
-      id:
-        userMessageId,
-
-      role:
-        "user",
-
-      content:
-        cleanText,
+    const modelUserMessage: Message = {
+      id: userMessageId,
+      role: "user",
+      content: cleanText,
     };
-
 
     /*
      * Capture model history before
      * changing the visible UI.
      */
-    const historyForModel: Message[] =
-      [
-        ...messages,
-        modelUserMessage,
-      ];
-
+    const historyForModel: Message[] = [
+      ...messages,
+      modelUserMessage,
+    ];
 
     /*
      * Show user message immediately.
@@ -647,11 +611,16 @@ export default function Chat() {
       ]
     );
 
+    /*
+     * Overall generation starts here.
+     */
+    setIsGenerating(true);
 
-    setIsGenerating(
-      true
-    );
-
+    /*
+     * Thinking starts here and will stop
+     * as soon as first real text arrives.
+     */
+    setIsThinking(true);
 
     setScrollSignal(
       (value) =>
@@ -666,7 +635,6 @@ export default function Chat() {
     const assistantId =
       crypto.randomUUID();
 
-
     /*
      * Add an empty assistant message.
      *
@@ -678,14 +646,9 @@ export default function Chat() {
       (previous) => [
         ...previous,
         {
-          id:
-            assistantId,
-
-          role:
-            "assistant",
-
-          content:
-            "",
+          id: assistantId,
+          role: "assistant",
+          content: "",
         },
       ]
     );
@@ -701,7 +664,6 @@ export default function Chat() {
     abortRef.current =
       controller;
 
-
     try {
 
       /* =================================================
@@ -712,8 +674,7 @@ export default function Chat() {
         await fetch(
           "/api/chat",
           {
-            method:
-              "POST",
+            method: "POST",
 
             headers: {
               "Content-Type":
@@ -752,6 +713,7 @@ export default function Chat() {
           errorMessage =
             errorData.error ||
             errorMessage;
+
         } catch {
           try {
             const text =
@@ -761,6 +723,7 @@ export default function Chat() {
               errorMessage =
                 text;
             }
+
           } catch {
             // Keep default error.
           }
@@ -789,7 +752,6 @@ export default function Chat() {
       const decoder =
         new TextDecoder();
 
-
       /*
        * Network chunks can split metadata
        * or response text at arbitrary places.
@@ -800,6 +762,13 @@ export default function Chat() {
         false;
 
       let streamedText = "";
+
+      /*
+       * Prevent unnecessary repeated
+       * setIsThinking(false) calls.
+       */
+      let firstTextReceived =
+        false;
 
 
       /* =================================================
@@ -813,7 +782,6 @@ export default function Chat() {
         } =
           await reader.read();
 
-
         if (done) {
           /*
            * Flush remaining decoder bytes.
@@ -824,13 +792,11 @@ export default function Chat() {
           break;
         }
 
-
         buffer +=
           decoder.decode(
             value,
             {
-              stream:
-                true,
+              stream: true,
             }
           );
 
@@ -843,7 +809,6 @@ export default function Chat() {
 
           const prefix =
             "__MEDHA_META__";
-
 
           /*
            * Backend sends:
@@ -860,18 +825,15 @@ export default function Chat() {
                 "\n"
               );
 
-
             /*
              * Metadata may be split across
              * network chunks.
              */
             if (
-              newlineIndex ===
-              -1
+              newlineIndex === -1
             ) {
               continue;
             }
-
 
             const metadataString =
               buffer.slice(
@@ -879,13 +841,11 @@ export default function Chat() {
                 newlineIndex
               );
 
-
             try {
               const metadata =
                 JSON.parse(
                   metadataString
                 );
-
 
               if (
                 metadata.conversationId
@@ -895,18 +855,15 @@ export default function Chat() {
                     metadata.conversationId
                   );
 
-
                 /*
                  * Update state and synchronous ref.
                  */
                 conversationIdRef.current =
                   newId;
 
-
                 setConversationId(
                   newId
                 );
-
 
                 console.log(
                   "Medha conversation ID:",
@@ -923,7 +880,6 @@ export default function Chat() {
               );
             }
 
-
             /*
              * Remove metadata.
              *
@@ -934,7 +890,6 @@ export default function Chat() {
               buffer.slice(
                 newlineIndex + 1
               );
-
 
             metadataProcessed =
               true;
@@ -965,13 +920,24 @@ export default function Chat() {
           const chunkText =
             buffer;
 
-
           buffer = "";
 
+          /*
+           * The moment actual response text arrives,
+           * Medha is no longer "thinking".
+           */
+          if (
+            !firstTextReceived &&
+            chunkText.trim()
+          ) {
+            firstTextReceived =
+              true;
+
+            setIsThinking(false);
+          }
 
           streamedText +=
             chunkText;
-
 
           setMessages(
             (previous) =>
@@ -981,14 +947,12 @@ export default function Chat() {
                     assistantId
                     ? {
                       ...message,
-
                       content:
                         streamedText,
                     }
                     : message
               )
           );
-
 
           /*
            * Notify MessageList that content
@@ -1010,9 +974,22 @@ export default function Chat() {
         metadataProcessed &&
         buffer
       ) {
+        /*
+         * Very short responses can potentially
+         * remain in the final decoder buffer.
+         */
+        if (
+          !firstTextReceived &&
+          buffer.trim()
+        ) {
+          firstTextReceived =
+            true;
+
+          setIsThinking(false);
+        }
+
         streamedText +=
           buffer;
-
 
         setMessages(
           (previous) =>
@@ -1022,7 +999,6 @@ export default function Chat() {
                   assistantId
                   ? {
                     ...message,
-
                     content:
                       streamedText,
                   }
@@ -1039,6 +1015,8 @@ export default function Chat() {
       if (
         !streamedText.trim()
       ) {
+        setIsThinking(false);
+
         setMessages(
           (previous) =>
             previous.map(
@@ -1047,7 +1025,6 @@ export default function Chat() {
                   assistantId
                   ? {
                     ...message,
-
                     content:
                       "Medha generated an empty response. Please try again.",
                   }
@@ -1064,6 +1041,13 @@ export default function Chat() {
       await loadConversations();
 
     } catch (error) {
+
+      /*
+       * Whatever error occurred, we are no
+       * longer waiting for the first token.
+       */
+      setIsThinking(false);
+
 
       /* =================================================
          ABORT
@@ -1083,7 +1067,6 @@ export default function Chat() {
                   !message.content
                   ? {
                     ...message,
-
                     content:
                       "Generation stopped.",
                   }
@@ -1104,12 +1087,10 @@ export default function Chat() {
         error
       );
 
-
       const errorMessage =
         error instanceof Error
           ? error.message
           : "Unknown error";
-
 
       setMessages(
         (previous) =>
@@ -1119,7 +1100,6 @@ export default function Chat() {
                 assistantId
                 ? {
                   ...message,
-
                   content:
                     `I ran into an error: ${errorMessage}`,
                 }
@@ -1132,11 +1112,15 @@ export default function Chat() {
       abortRef.current =
         null;
 
+      /*
+       * Safety cleanup.
+       */
+      setIsThinking(false);
 
-      setIsGenerating(
-        false
-      );
-
+      /*
+       * Entire request is now finished.
+       */
+      setIsGenerating(false);
 
       setScrollSignal(
         (value) =>
@@ -1151,6 +1135,12 @@ export default function Chat() {
   ==================================================== */
 
   function stopGeneration() {
+    /*
+     * Hide thinking immediately when
+     * the user presses Stop.
+     */
+    setIsThinking(false);
+
     abortRef.current?.abort();
   }
 
@@ -1290,7 +1280,6 @@ export default function Chat() {
                 Medha AI
               </strong>
 
-
               <span>
                 {mode ===
                   "assistant"
@@ -1378,8 +1367,16 @@ export default function Chat() {
               messages
             }
 
+            /*
+             * IMPORTANT:
+             *
+             * MessageList only needs to know whether
+             * we're waiting for the first response text.
+             *
+             * It no longer receives isGenerating here.
+             */
             isGenerating={
-              isGenerating
+              isThinking
             }
 
             scrollSignal={
@@ -1398,6 +1395,13 @@ export default function Chat() {
           "assistant" && (
 
             <ChatInput
+              /*
+               * ChatInput still receives isGenerating.
+               *
+               * This keeps Stop Generation and duplicate
+               * request protection working throughout
+               * the entire stream.
+               */
               isGenerating={
                 isGenerating
               }
