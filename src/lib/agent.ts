@@ -1,9 +1,4 @@
 import {
-  getGroq,
-  GROQ_MODEL,
-} from "@/lib/groq";
-
-import {
   MEDHA_SYSTEM_PROMPT,
 } from "@/lib/prompts";
 
@@ -11,6 +6,10 @@ import {
   webSearch,
   type WebSearchResult,
 } from "@/lib/tools/web-search";
+
+import {
+  createLLMStream,
+} from "@/lib/llm/router";
 
 import type {
   Message,
@@ -34,7 +33,6 @@ const CURRENT_INFO_PATTERNS = [
   /\bthis week\b/i,
   /\bthis month\b/i,
   /\bthis year\b/i,
-  /\b2026\b/i,
 
   /\bwhat happened today\b/i,
 
@@ -72,7 +70,9 @@ function isIdentityQuestion(
 ): boolean {
   return IDENTITY_PATTERNS.some(
     (pattern) =>
-      pattern.test(text)
+      pattern.test(
+        text
+      )
   );
 }
 
@@ -85,14 +85,19 @@ function needsFreshInformation(
   text: string
 ): boolean {
   if (
-    isIdentityQuestion(text)
+    isIdentityQuestion(
+      text
+    )
   ) {
     return false;
   }
 
+
   return CURRENT_INFO_PATTERNS.some(
     (pattern) =>
-      pattern.test(text)
+      pattern.test(
+        text
+      )
   );
 }
 
@@ -107,7 +112,9 @@ function getLatestUserMessage(
   for (
     let index =
       messages.length - 1;
+
     index >= 0;
+
     index--
   ) {
     if (
@@ -116,10 +123,12 @@ function getLatestUserMessage(
     ) {
       return (
         messages[index]
-          .content || ""
+          .content ||
+        ""
       );
     }
   }
+
 
   return "";
 }
@@ -141,10 +150,12 @@ function buildWebContext(
         const sourceNumber =
           index + 1;
 
+
         const published =
           result.publishedDate
             ? `\nPublished: ${result.publishedDate}`
             : "";
+
 
         return `
 SOURCE ${sourceNumber}
@@ -174,15 +185,14 @@ ${result.content}
 export async function createMedhaStream(
   messages: Message[]
 ) {
-  const groq =
-    getGroq();
-
   const latestUserMessage =
     getLatestUserMessage(
       messages
     );
 
+
   console.log("");
+
   console.log(
     "===================================="
   );
@@ -218,6 +228,7 @@ export async function createMedhaStream(
       latestUserMessage
     );
 
+
   console.log(
     "Fresh information required:",
     requiresWebSearch
@@ -234,6 +245,7 @@ export async function createMedhaStream(
     console.log(
       "Medha decided to search the web."
     );
+
 
     const searchResults =
       await webSearch(
@@ -253,10 +265,12 @@ export async function createMedhaStream(
         "Web search successful."
       );
 
+
       console.log(
         "Sources available:",
         searchResults.length
       );
+
 
       const webContext =
         buildWebContext(
@@ -321,6 +335,7 @@ Generate the final response using the evidence above.
 `;
     }
 
+
     /* ==================================================
        SEARCH FAILURE
     ================================================== */
@@ -358,6 +373,7 @@ Tell the user briefly that live search could not retrieve results for this reque
     }
   }
 
+
   /* ====================================================
      NORMAL KNOWLEDGE MODE
   ==================================================== */
@@ -370,64 +386,54 @@ Tell the user briefly that live search could not retrieve results for this reque
 
 
   /* ====================================================
-     GROQ REQUEST
+     CONVERSATION WINDOW
   ==================================================== */
 
-  console.log(
-    "Sending request to Groq..."
-  );
+  /*
+   * Keep only the most recent messages when sending
+   * conversation history to the LLM providers.
+   */
 
-  console.log(
-    "Model:",
-    GROQ_MODEL
-  );
-
-
-  const stream =
-    await groq.chat.completions.create(
-      {
-        model:
-          GROQ_MODEL,
-
-        messages: [
-          {
-            role:
-              "system",
-
-            content:
-              systemPrompt,
-          },
-
-          ...messages
-            .slice(-14)
-            .map(
-              (
-                message
-              ) => ({
-                role:
-                  message.role,
-
-                content:
-                  message.content,
-              })
-            ),
-        ],
-
-        stream:
-          true,
-
-        temperature:
-          0.3,
-
-        max_tokens:
-          3000,
-      }
+  const recentMessages =
+    messages.slice(
+      -14
     );
 
 
+  /* ====================================================
+     SEND TO LLM PROVIDER ROUTER
+  ==================================================== */
+
   console.log(
-    "Groq stream ready."
+    "Sending prepared Medha request to LLM router..."
   );
+
+
+  const result =
+    await createLLMStream(
+      recentMessages,
+      systemPrompt
+    );
+
+
+  /*
+   * IMPORTANT:
+   *
+   * We intentionally do NOT use:
+   *
+   * result.provider
+   *
+   * Provider selection happens lazily while the
+   * response stream is consumed.
+   *
+   * router.ts logs whether Gemini or Groq was
+   * actually selected.
+   */
+
+  console.log(
+    "Medha LLM stream initialized."
+  );
+
 
   console.log(
     "===================================="
@@ -436,5 +442,5 @@ Tell the user briefly that live search could not retrieve results for this reque
   console.log("");
 
 
-  return stream;
+  return result;
 }

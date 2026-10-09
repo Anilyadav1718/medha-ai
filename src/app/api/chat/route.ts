@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { createMedhaStream } from "@/lib/agent";
+
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import {
@@ -17,6 +18,7 @@ import type { Message } from "@/types/chat";
 
 
 export const runtime = "nodejs";
+
 export const maxDuration = 60;
 
 
@@ -31,9 +33,11 @@ function getErrorMessage(
     return error.message;
   }
 
+
   if (typeof error === "string") {
     return error;
   }
+
 
   if (
     typeof error === "object" &&
@@ -44,6 +48,7 @@ function getErrorMessage(
         string,
         unknown
       >;
+
 
     const parts = [
       err.message,
@@ -93,31 +98,57 @@ function getSafeErrorMessage(
       error
     );
 
+
   const lower =
     raw.toLowerCase();
 
 
-  /*
-   * ----------------------------------------------------
-   * GROQ RATE LIMIT
-   * ----------------------------------------------------
-   *
-   * Also recognizes our already-sanitized error so
-   * double error handling cannot turn it into the
-   * generic fallback.
-   */
+  /* ====================================================
+     ALL PROVIDERS UNAVAILABLE
+  ==================================================== */
+
+  if (
+    lower.includes(
+      "all_llm_providers_unavailable"
+    )
+  ) {
+    return (
+      "Medha AI's AI providers are temporarily unavailable. Please try again shortly."
+    );
+  }
+
+
+  /* ====================================================
+     RATE LIMIT / QUOTA
+  ==================================================== */
 
   if (
     lower.includes("429") ||
+
     lower.includes(
       "rate limit"
     ) ||
+
     lower.includes(
       "rate_limit_exceeded"
     ) ||
+
+    lower.includes(
+      "resource_exhausted"
+    ) ||
+
+    lower.includes(
+      "resource exhausted"
+    ) ||
+
+    lower.includes(
+      "quota exceeded"
+    ) ||
+
     lower.includes(
       "tokens per day"
     ) ||
+
     lower.includes(
       "usage limit has been reached"
     )
@@ -128,16 +159,15 @@ function getSafeErrorMessage(
   }
 
 
-  /*
-   * ----------------------------------------------------
-   * TIMEOUT
-   * ----------------------------------------------------
-   */
+  /* ====================================================
+     TIMEOUT
+  ==================================================== */
 
   if (
     lower.includes(
       "timeout"
     ) ||
+
     lower.includes(
       "timed out"
     )
@@ -148,11 +178,9 @@ function getSafeErrorMessage(
   }
 
 
-  /*
-   * ----------------------------------------------------
-   * GENERIC SAFE ERROR
-   * ----------------------------------------------------
-   */
+  /* ====================================================
+     GENERIC SAFE ERROR
+  ==================================================== */
 
   return (
     "Medha AI ran into a temporary problem. Please try again."
@@ -172,17 +200,34 @@ function isRateLimitError(
       error
     ).toLowerCase();
 
+
   return (
     raw.includes("429") ||
+
     raw.includes(
       "rate limit"
     ) ||
+
     raw.includes(
       "rate_limit_exceeded"
     ) ||
+
+    raw.includes(
+      "resource_exhausted"
+    ) ||
+
+    raw.includes(
+      "resource exhausted"
+    ) ||
+
+    raw.includes(
+      "quota exceeded"
+    ) ||
+
     raw.includes(
       "tokens per day"
     ) ||
+
     raw.includes(
       "usage limit has been reached"
     )
@@ -211,7 +256,6 @@ export async function POST(
 
 
   try {
-
     /* ==================================================
        1. READ REQUEST BODY
     ================================================== */
@@ -369,7 +413,6 @@ export async function POST(
 
 
     if (!conversationId) {
-
       conversationId =
         crypto.randomUUID();
 
@@ -426,9 +469,7 @@ export async function POST(
       console.log(
         "Conversation created successfully."
       );
-
     } else {
-
       console.log(
         "Using conversation:",
         conversationId
@@ -455,7 +496,9 @@ export async function POST(
       userMessageError,
     } =
       await supabase
-        .from("messages")
+        .from(
+          "messages"
+        )
         .insert({
           id:
             userMessageId,
@@ -495,13 +538,9 @@ export async function POST(
        7. SMART ROUTING
     ================================================== */
 
-    /*
-     * --------------------------------------------------
-     * IDENTITY
-     * --------------------------------------------------
-     *
-     * These questions never need Groq.
-     */
+    /* ==================================================
+       IDENTITY
+    ================================================== */
 
     const identityResponse =
       getIdentityResponse(
@@ -514,13 +553,19 @@ export async function POST(
       identityResponse;
 
 
+    /*
+     * "llm" now means:
+     *
+     * Gemini or Groq through the provider router.
+     */
+
     let responseSource:
       "identity" |
       "cache" |
-      "groq" =
+      "llm" =
       identityResponse
         ? "identity"
-        : "groq";
+        : "llm";
 
 
     if (
@@ -531,16 +576,14 @@ export async function POST(
       );
 
       console.log(
-        "[MEDHA ROUTER] Groq skipped."
+        "[MEDHA ROUTER] LLM providers skipped."
       );
     }
 
 
-    /*
-     * --------------------------------------------------
-     * CACHE DECISION
-     * --------------------------------------------------
-     */
+    /* ==================================================
+       CACHE DECISION
+    ================================================== */
 
     const bypassCache =
       shouldBypassCache(
@@ -549,11 +592,9 @@ export async function POST(
       );
 
 
-    /*
-     * --------------------------------------------------
-     * CACHE LOOKUP
-     * --------------------------------------------------
-     */
+    /* ==================================================
+       CACHE LOOKUP
+    ================================================== */
 
     if (
       !directResponse &&
@@ -580,16 +621,17 @@ export async function POST(
         );
 
         console.log(
-          "[MEDHA ROUTER] Groq skipped."
+          "[MEDHA ROUTER] Gemini skipped."
         );
 
+        console.log(
+          "[MEDHA ROUTER] Groq skipped."
+        );
       } else {
-
         console.log(
           "[MEDHA ROUTER] Cache MISS."
         );
       }
-
     } else if (
       !identityResponse &&
       bypassCache
@@ -601,10 +643,10 @@ export async function POST(
 
 
     /* ==================================================
-       8. CREATE GROQ STREAM WHEN REQUIRED
+       8. CREATE LLM STREAM WHEN REQUIRED
     ================================================== */
 
-    let groqStream:
+    let medhaResult:
       Awaited<
         ReturnType<
           typeof createMedhaStream
@@ -613,48 +655,41 @@ export async function POST(
       null;
 
 
-    if (!directResponse) {
-
+    if (
+      !directResponse
+    ) {
       console.log(
-        "Starting Medha AI / Groq..."
+        "Starting Medha AI LLM router..."
       );
 
 
       try {
-
-        groqStream =
+        medhaResult =
           await createMedhaStream(
             messages
           );
 
 
         console.log(
-          "Groq stream created successfully."
+          "Medha LLM stream created successfully."
         );
-
       } catch (
-      groqError
+      llmError
       ) {
-
         /*
-         * Full details remain available only
-         * in server logs.
+         * Detailed provider errors remain
+         * available in server logs only.
          */
 
         console.error(
-          "GROQ START ERROR:",
-          groqError
+          "MEDHA LLM START ERROR:",
+          llmError
         );
 
 
-        /*
-         * Throw only safe information to the
-         * outer API handler.
-         */
-
         throw new Error(
           getSafeErrorMessage(
-            groqError
+            llmError
           )
         );
       }
@@ -695,13 +730,10 @@ export async function POST(
 
     const stream =
       new ReadableStream({
-
         async start(
           controller
         ) {
-
           try {
-
             /* ==========================================
                SEND METADATA FIRST
             ========================================== */
@@ -728,7 +760,6 @@ export async function POST(
             if (
               directResponse
             ) {
-
               fullText =
                 directResponse;
 
@@ -757,15 +788,13 @@ export async function POST(
                 "Response source:",
                 finalResponseSource
               );
-
             } else {
-
               /* ========================================
-                 GROQ TRUE STREAMING
+                 PROVIDER-NEUTRAL TRUE STREAMING
               ======================================== */
 
               if (
-                !groqStream
+                !medhaResult
               ) {
                 throw new Error(
                   "Medha response stream was not initialized."
@@ -773,19 +802,29 @@ export async function POST(
               }
 
 
+              /*
+               * IMPORTANT:
+               *
+               * medhaResult.stream yields plain strings.
+               *
+               * We no longer access:
+               *
+               * chunk.choices[0].delta.content
+               *
+               * That Groq-specific behavior now lives
+               * inside groq-provider.ts.
+               *
+               * Gemini is converted to the same plain
+               * string interface by gemini.ts.
+               */
+
               for await (
-                const chunk of groqStream
+                const text
+                of medhaResult.stream
               ) {
-
-                const text =
-                  chunk
-                    .choices?.[0]
-                    ?.delta
-                    ?.content ||
-                  "";
-
-
-                if (!text) {
+                if (
+                  !text
+                ) {
                   continue;
                 }
 
@@ -795,7 +834,7 @@ export async function POST(
 
 
                 /*
-                 * Real chunk-by-chunk streaming.
+                 * Real provider chunk-by-chunk streaming.
                  */
 
                 controller.enqueue(
@@ -807,7 +846,7 @@ export async function POST(
 
 
               console.log(
-                "Groq streaming completed."
+                "Medha LLM streaming completed."
               );
 
 
@@ -825,7 +864,6 @@ export async function POST(
             if (
               fullText.trim()
             ) {
-
               const assistantMessageId =
                 crypto.randomUUID();
 
@@ -865,14 +903,11 @@ export async function POST(
               if (
                 assistantMessageError
               ) {
-
                 console.error(
                   "SUPABASE SAVE ASSISTANT ERROR:",
                   assistantMessageError
                 );
-
               } else {
-
                 console.log(
                   "Assistant message saved successfully."
                 );
@@ -880,14 +915,15 @@ export async function POST(
 
 
               /* ========================================
-                 SAVE NEW GROQ ANSWER TO CACHE
+                 SAVE NEW LLM ANSWER TO CACHE
               ======================================== */
 
               /*
-               * Only newly-generated safe answers
+               * Only newly-generated reusable answers
                * should be saved.
                *
                * Don't re-save:
+               *
                * - identity responses
                * - existing cache responses
                * - current/latest information
@@ -896,10 +932,9 @@ export async function POST(
 
               if (
                 finalResponseSource ===
-                "groq" &&
+                "llm" &&
                 !finalBypassCache
               ) {
-
                 await saveCachedResponse(
                   finalUserQuery,
                   fullText.trim()
@@ -942,14 +977,11 @@ export async function POST(
               if (
                 conversationUpdateError
               ) {
-
                 console.error(
                   "SUPABASE UPDATE CONVERSATION ERROR:",
                   conversationUpdateError
                 );
-
               } else {
-
                 console.log(
                   "Conversation timestamp updated."
                 );
@@ -972,14 +1004,13 @@ export async function POST(
 
 
             controller.close();
-
           } catch (
           streamError:
             unknown
           ) {
-
             /*
-             * Full error only goes to server logs.
+             * Provider errors occurring during
+             * streaming arrive here.
              */
 
             console.error(
@@ -1001,18 +1032,14 @@ export async function POST(
 
 
             try {
-
               controller.enqueue(
                 encoder.encode(
                   `\n\n⚠️ ${safeMessage}`
                 )
               );
 
-
               controller.close();
-
             } catch {
-
               controller.error(
                 streamError
               );
@@ -1032,7 +1059,6 @@ export async function POST(
         status: 200,
 
         headers: {
-
           "Content-Type":
             "text/plain; charset=utf-8",
 
@@ -1055,12 +1081,10 @@ export async function POST(
         },
       }
     );
-
   } catch (
   error:
     unknown
   ) {
-
     /* ==================================================
        OUTER API ERROR
     ================================================== */
