@@ -1100,8 +1100,8 @@ export default function Chat() {
                 assistantId
                 ? {
                   ...message,
-                  content:
-                    `I ran into an error: ${errorMessage}`,
+                  content: errorMessage
+
                 }
                 : message
           )
