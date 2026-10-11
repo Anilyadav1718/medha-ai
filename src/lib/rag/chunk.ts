@@ -1,15 +1,14 @@
-export type TextChunk = {
-    content: string;
-    chunkIndex: number;
-};
+export const DEFAULT_CHUNK_SIZE = 1200;
+export const DEFAULT_CHUNK_OVERLAP = 200;
 
 export function chunkText(
     text: string,
-    chunkSize = 1200,
-    overlap = 200
-): TextChunk[] {
+    chunkSize = DEFAULT_CHUNK_SIZE,
+    overlap = DEFAULT_CHUNK_OVERLAP
+): string[] {
     const cleaned = text
-        .replace(/\r/g, "")
+        .replace(/\r\n/g, "\n")
+        .replace(/\r/g, "\n")
         .replace(/[ \t]+/g, " ")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
@@ -18,45 +17,100 @@ export function chunkText(
         return [];
     }
 
-    const chunks: TextChunk[] = [];
+    if (chunkSize <= 0) {
+        throw new Error(
+            "Chunk size must be greater than 0."
+        );
+    }
+
+    if (
+        overlap < 0 ||
+        overlap >= chunkSize
+    ) {
+        throw new Error(
+            "Chunk overlap must be >= 0 and smaller than chunk size."
+        );
+    }
+
+    const chunks: string[] = [];
 
     let start = 0;
-    let chunkIndex = 0;
 
     while (start < cleaned.length) {
-        let end = Math.min(start + chunkSize, cleaned.length);
+        let end = Math.min(
+            start + chunkSize,
+            cleaned.length
+        );
 
-        // Try not to cut directly in the middle of a sentence/paragraph.
+        /*
+         * Avoid cutting in the middle of a word
+         * or sentence when possible.
+         */
         if (end < cleaned.length) {
-            const paragraphBreak = cleaned.lastIndexOf("\n\n", end);
-            const sentenceBreak = cleaned.lastIndexOf(". ", end);
+            const searchStart = Math.max(
+                start,
+                end - 250
+            );
 
-            const bestBreak = Math.max(paragraphBreak, sentenceBreak);
+            const section =
+                cleaned.slice(
+                    searchStart,
+                    end
+                );
 
-            if (bestBreak > start + chunkSize * 0.6) {
-                end = bestBreak + 1;
+            const paragraphBreak =
+                section.lastIndexOf("\n\n");
+
+            const sentenceBreak =
+                Math.max(
+                    section.lastIndexOf(". "),
+                    section.lastIndexOf("? "),
+                    section.lastIndexOf("! ")
+                );
+
+            const spaceBreak =
+                section.lastIndexOf(" ");
+
+            const bestBreak =
+                paragraphBreak >= 0
+                    ? paragraphBreak + 2
+                    : sentenceBreak >= 0
+                        ? sentenceBreak + 2
+                        : spaceBreak >= 0
+                            ? spaceBreak + 1
+                            : -1;
+
+            if (bestBreak > 0) {
+                end =
+                    searchStart +
+                    bestBreak;
             }
         }
 
-        const content = cleaned.slice(start, end).trim();
+        const chunk =
+            cleaned
+                .slice(start, end)
+                .trim();
 
-        if (content) {
-            chunks.push({
-                content,
-                chunkIndex,
-            });
-
-            chunkIndex += 1;
+        if (chunk) {
+            chunks.push(chunk);
         }
 
         if (end >= cleaned.length) {
             break;
         }
 
-        const nextStart = end - overlap;
+        const nextStart =
+            end - overlap;
 
-        // Safety against an accidental infinite loop.
-        start = nextStart > start ? nextStart : end;
+        /*
+         * Safety check to prevent
+         * accidental infinite loops.
+         */
+        start =
+            nextStart > start
+                ? nextStart
+                : end;
     }
 
     return chunks;

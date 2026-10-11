@@ -1,369 +1,215 @@
 import "server-only";
 
-import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-const CACHE_TTL_DAYS = 30;
+/* =========================================================
+   NORMALIZE CACHE KEY
+========================================================= */
 
-
-/* ======================================================
-   NORMALIZE / CANONICALIZE QUERY
-====================================================== */
-
-export function normalizeQuery(
-    query: string
-): string {
-    let normalized = query
+export function normalizeCacheQuery(query: string): string {
+    return query
+        .normalize("NFKC")
+        .trim()
         .toLowerCase()
-        .trim()
-        .replace(/[?!.,;:]+$/g, "")
-        .replace(/\s+/g, " ");
-
-    /*
-     * Convert common equivalent definition/explanation
-     * questions into the same canonical query.
-     *
-     * Examples:
-     *
-     * RAG?                -> rag
-     * What is RAG?        -> rag
-     * Explain RAG         -> rag
-     * Define RAG          -> rag
-     * Tell me about RAG   -> rag
-     *
-     * Python?             -> python
-     * What is Python?     -> python
-     * Explain Python      -> python
-     */
-
-    const prefixes = [
-        /^what is\s+/,
-        /^what's\s+/,
-        /^what are\s+/,
-        /^explain to me\s+/,
-        /^explain\s+/,
-        /^define\s+/,
-        /^tell me about\s+/,
-        /^describe\s+/,
-        /^give me an explanation of\s+/,
-    ];
-
-    for (const pattern of prefixes) {
-        normalized =
-            normalized.replace(
-                pattern,
-                ""
-            );
-    }
-
-    return normalized
-        .trim()
-        .replace(/\s+/g, " ");
+        .replace(/[“”"'`]/g, "")
+        .replace(/[?!.,;:()[\]{}]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
-
-/* ======================================================
-   CREATE CACHE KEY
-====================================================== */
-
-function createCacheKey(
-    query: string
-): string {
-    const normalized =
-        normalizeQuery(query);
-
-    return crypto
-        .createHash("sha256")
-        .update(normalized)
-        .digest("hex");
-}
-
-
-/* ======================================================
+/* =========================================================
    CACHE BYPASS RULES
-====================================================== */
+========================================================= */
 
+/**
+ * Cache only stable, standalone questions.
+ *
+ * IMPORTANT:
+ * We do NOT bypass cache just because the conversation already
+ * contains messages. That was preventing repeated stable prompts
+ * from hitting cache inside an existing conversation.
+ *
+ * messageCount is used only when the current query clearly depends
+ * on earlier conversation context.
+ */
 export function shouldBypassCache(
     query: string,
     messageCount = 1
 ): boolean {
-    const normalized =
-        normalizeQuery(query);
+    const raw = query.trim();
+    const normalized = normalizeCacheQuery(raw);
 
+    if (!normalized) {
+        return true;
+    }
 
-    /*
-     * ----------------------------------------------------
-     * FOLLOW-UP / CONTEXTUAL CONVERSATIONS
-     * ----------------------------------------------------
-     *
-     * Global cache should only be used when the request
-     * can safely stand on its own.
-     *
-     * Example:
-     *
-     * User: Explain Python
-     * User: Explain that more simply
-     *
-     * The second request depends on previous context.
-     */
+    /* ---------------------------------------------------------
+       CURRENT / LIVE / TIME-SENSITIVE INFORMATION
+    --------------------------------------------------------- */
+
+    const timeSensitivePatterns: RegExp[] = [
+        /\blatest\b/i,
+        /\brecent\b/i,
+        /\bcurrently\b/i,
+        /\bcurrent\b/i,
+        /\btoday\b/i,
+        /\btonight\b/i,
+        /\btomorrow\b/i,
+        /\byesterday\b/i,
+        /\bthis week\b/i,
+        /\bthis month\b/i,
+        /\bthis year\b/i,
+        /\bright now\b/i,
+        /\bjust happened\b/i,
+        /\bbreaking\b/i,
+        /\blive\b/i,
+        /\bnews\b/i,
+        /\bweather\b/i,
+        /\bscore\b/i,
+        /\bprice\b/i,
+        /\bstock price\b/i,
+        /\bexchange rate\b/i,
+        /\bwho won\b/i,
+        /\bwho is winning\b/i,
+    ];
+
+    if (timeSensitivePatterns.some((pattern) => pattern.test(raw))) {
+        console.log("[CACHE] BYPASS: time-sensitive query:", normalized);
+        return true;
+    }
+
+    /* ---------------------------------------------------------
+       CONTEXT-DEPENDENT FOLLOW-UPS
+    --------------------------------------------------------- */
 
     if (messageCount > 1) {
-        console.log(
-            "[CACHE] BYPASS: conversation context"
-        );
+        const contextualPatterns: RegExp[] = [
+            /^(why|how|when|where|which one|what about it|what about that|what about this)\??$/i,
+            /^(continue|go on|more|explain more|tell me more|elaborate)\.?$/i,
+            /\b(previous answer|last answer|your answer|you said|you mentioned)\b/i,
+            /\b(as above|from above|the above|earlier response|previous response)\b/i,
+            /\b(this one|that one|same one|same thing)\b/i,
+            /\b(explain|describe|summarize|fix|change|rewrite)\s+(it|that|this|them)\b/i,
+            /\b(why|how|when|where)\s+(is|are|does|do|did|was|were)\s+(it|that|this|they|he|she)\b/i,
+            /\bwhat about\s+(it|that|this|them|those|these)\b/i,
+        ];
 
-        return true;
+        if (contextualPatterns.some((pattern) => pattern.test(raw))) {
+            console.log("[CACHE] BYPASS: contextual follow-up:", normalized);
+            return true;
+        }
     }
-
-
-    /*
-     * ----------------------------------------------------
-     * CURRENT / FRESH INFORMATION
-     * ----------------------------------------------------
-     *
-     * Never serve these from the 30-day cache.
-     */
-
-    const freshPatterns = [
-        /\btoday\b/,
-        /\bcurrent\b/,
-        /\blatest\b/,
-        /\brecent\b/,
-        /\bnow\b/,
-        /\bnews\b/,
-        /\bweather\b/,
-        /\bprice\b/,
-        /\bstock\b/,
-        /\bscore\b/,
-        /\blive\b/,
-        /\btrending\b/,
-        /\bthis week\b/,
-        /\bthis month\b/,
-        /\byesterday\b/,
-        /\btomorrow\b/,
-        /\b2026\b/,
-    ];
-
-    if (
-        freshPatterns.some(
-            (pattern) =>
-                pattern.test(normalized)
-        )
-    ) {
-        console.log(
-            "[CACHE] BYPASS: fresh/current information"
-        );
-
-        return true;
-    }
-
-
-    /*
-     * ----------------------------------------------------
-     * PERSONAL / CONTEXTUAL QUESTIONS
-     * ----------------------------------------------------
-     *
-     * These should never be shared through a global cache.
-     */
-
-    const contextualPatterns = [
-        /\bmy\b/,
-        /\bmine\b/,
-        /\bme\b/,
-        /\bour\b/,
-        /\bprevious\b/,
-        /\bearlier\b/,
-        /\babove\b/,
-        /\bwhat did i\b/,
-        /\bwhat did we\b/,
-        /\bthis conversation\b/,
-    ];
-
-    if (
-        contextualPatterns.some(
-            (pattern) =>
-                pattern.test(normalized)
-        )
-    ) {
-        console.log(
-            "[CACHE] BYPASS: personal/contextual query"
-        );
-
-        return true;
-    }
-
 
     return false;
 }
 
-
-/* ======================================================
+/* =========================================================
    GET CACHED RESPONSE
-====================================================== */
+========================================================= */
 
 export async function getCachedResponse(
     query: string
 ): Promise<string | null> {
-    try {
-        const supabase =
-            createAdminClient();
+    const normalizedQuery = normalizeCacheQuery(query);
 
-        const normalizedQuery =
-            normalizeQuery(query);
-
-        const cacheKey =
-            createCacheKey(query);
-
-
-        /*
-         * Anything older than 30 days is considered expired.
-         */
-
-        const expiryDate =
-            new Date(
-                Date.now() -
-                CACHE_TTL_DAYS *
-                24 *
-                60 *
-                60 *
-                1000
-            ).toISOString();
-
-
-        const {
-            data,
-            error,
-        } =
-            await supabase
-                .from("response_cache")
-                .select(
-                    "response, updated_at"
-                )
-                .eq(
-                    "cache_key",
-                    cacheKey
-                )
-                .gte(
-                    "updated_at",
-                    expiryDate
-                )
-                .maybeSingle();
-
-
-        if (error) {
-            console.error(
-                "[CACHE] LOOKUP ERROR:",
-                error
-            );
-
-            /*
-             * Cache is an optimization.
-             * A cache failure must never break chat.
-             */
-
-            return null;
-        }
-
-
-        if (!data?.response) {
-            console.log(
-                "[CACHE] MISS:",
-                normalizedQuery
-            );
-
-            return null;
-        }
-
-
-        console.log(
-            "[CACHE] HIT:",
-            normalizedQuery
-        );
-
-        return data.response;
-
-    } catch (error) {
-        console.error(
-            "[CACHE] LOOKUP FAILED:",
-            error
-        );
-
+    if (!normalizedQuery) {
         return null;
     }
+
+    const supabase = createAdminClient();
+
+    const { data, error } = await supabase
+        .from("response_cache")
+        .select("response")
+        .eq("normalized_query", normalizedQuery)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error) {
+        console.error("[CACHE] LOOKUP ERROR:", error);
+        return null;
+    }
+
+    const cachedResponse =
+        typeof data?.response === "string"
+            ? data.response.trim()
+            : "";
+
+    if (!cachedResponse) {
+        console.log("[CACHE] MISS:", normalizedQuery);
+        return null;
+    }
+
+    console.log("[CACHE] HIT:", normalizedQuery);
+
+    return cachedResponse;
 }
 
-
-/* ======================================================
-   SAVE RESPONSE TO CACHE
-====================================================== */
+/* =========================================================
+   SAVE CACHED RESPONSE
+========================================================= */
 
 export async function saveCachedResponse(
     query: string,
     response: string
 ): Promise<void> {
-    const cleanResponse =
-        response.trim();
+    const normalizedQuery = normalizeCacheQuery(query);
+    const cleanResponse = response.trim();
 
-    if (!cleanResponse) {
+    if (!normalizedQuery || !cleanResponse) {
         return;
     }
 
-    try {
-        const supabase =
-            createAdminClient();
+    const supabase = createAdminClient();
 
-        const normalizedQuery =
-            normalizeQuery(query);
+    /*
+     * Do not depend on an ON CONFLICT constraint here.
+     * First look for an existing row. If it exists, refresh it.
+     * Otherwise insert a new cache entry.
+     */
+    const { data: existing, error: lookupError } = await supabase
+        .from("response_cache")
+        .select("id")
+        .eq("normalized_query", normalizedQuery)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-        const cacheKey =
-            createCacheKey(query);
+    if (lookupError) {
+        console.error("[CACHE] SAVE LOOKUP ERROR:", lookupError);
+        return;
+    }
 
+    if (existing?.id) {
+        const { error: updateError } = await supabase
+            .from("response_cache")
+            .update({
+                response: cleanResponse,
+                created_at: new Date().toISOString(),
+            })
+            .eq("id", existing.id);
 
-        const {
-            error,
-        } =
-            await supabase
-                .from("response_cache")
-                .upsert(
-                    {
-                        cache_key:
-                            cacheKey,
-
-                        normalized_query:
-                            normalizedQuery,
-
-                        response:
-                            cleanResponse,
-
-                        updated_at:
-                            new Date().toISOString(),
-                    },
-                    {
-                        onConflict:
-                            "cache_key",
-                    }
-                );
-
-
-        if (error) {
-            console.error(
-                "[CACHE] SAVE ERROR:",
-                error
-            );
-
+        if (updateError) {
+            console.error("[CACHE] UPDATE ERROR:", updateError);
             return;
         }
 
-
-        console.log(
-            "[CACHE] SAVED:",
-            normalizedQuery
-        );
-
-    } catch (error) {
-        console.error(
-            "[CACHE] SAVE FAILED:",
-            error
-        );
+        console.log("[CACHE] UPDATED:", normalizedQuery);
+        return;
     }
+
+    const { error: insertError } = await supabase
+        .from("response_cache")
+        .insert({
+            normalized_query: normalizedQuery,
+            response: cleanResponse,
+        });
+
+    if (insertError) {
+        console.error("[CACHE] SAVE ERROR:", insertError);
+        return;
+    }
+
+    console.log("[CACHE] SAVED:", normalizedQuery);
 }

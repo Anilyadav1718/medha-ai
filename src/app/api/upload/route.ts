@@ -1,403 +1,785 @@
+import "server-only";
 import "pdf-parse/worker";
 
-import { createAdminClient } from "@/lib/supabase/admin";
-import { chunkText } from "@/lib/rag/chunk";
-import { createEmbedding } from "@/lib/rag/embeddings";
 import { PDFParse } from "pdf-parse";
+import {
+  NextRequest,
+  NextResponse,
+} from "next/server";
+
+import {
+  createAdminClient,
+} from "@/lib/supabase/admin";
+
+import {
+  chunkText,
+} from "@/lib/rag/chunk";
+
+import {
+  createDocumentEmbeddings,
+  EMBEDDING_MODEL,
+} from "@/lib/rag/embeddings";
+
+/* ======================================================
+   NEXT.JS CONFIG
+====================================================== */
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+/* ======================================================
+   CONFIG
+====================================================== */
 
-export async function POST(request: Request) {
+const MAX_FILE_SIZE =
+  10 * 1024 * 1024;
+
+const MAX_CHUNKS = 250;
+
+/* ======================================================
+   POST — UPLOAD + PROCESS PDF
+====================================================== */
+
+export async function POST(
+  request: NextRequest
+) {
   console.log("");
-  console.log("====================================");
-  console.log("MEDHA PDF UPLOAD STARTED");
-  console.log("====================================");
+  console.log(
+    "===================================="
+  );
+  console.log(
+    "MEDHA PDF UPLOAD STARTED"
+  );
+  console.log(
+    "===================================="
+  );
 
-  let documentId: string | null = null;
+  let parser: PDFParse | null =
+    null;
+
+  let documentId:
+    string | null = null;
 
   try {
-    // --------------------------------------------------------
-    // 1. Read multipart form data
-    // --------------------------------------------------------
+    /* ==================================================
+       1. READ FORM DATA
+    ================================================== */
 
-    const formData = await request.formData();
+    const formData =
+      await request.formData();
 
-    const file = formData.get("file");
-    const visitorId = formData.get("visitorId");
+    const fileValue =
+      formData.get("file");
 
-    if (!(file instanceof File)) {
-      return Response.json(
-        { error: "Please select a PDF file." },
-        { status: 400 }
+    const visitorId =
+      String(
+        formData.get(
+          "visitorId"
+        ) || ""
+      ).trim();
+
+    /* ==================================================
+       2. VALIDATION
+    ================================================== */
+
+    if (!visitorId) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "visitorId is required.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    if (typeof visitorId !== "string" || !visitorId.trim()) {
-      return Response.json(
-        { error: "Visitor ID is required." },
-        { status: 400 }
+    if (
+      !fileValue ||
+      !(fileValue instanceof File)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "A PDF file is required.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    console.log("File:", file.name);
-    console.log("Size:", file.size);
-    console.log("Type:", file.type);
+    const file = fileValue;
 
-    // --------------------------------------------------------
-    // 2. Validate PDF
-    // --------------------------------------------------------
-
-    const isPdf =
-      file.type === "application/pdf" ||
-      file.name.toLowerCase().endsWith(".pdf");
-
-    if (!isPdf) {
-      return Response.json(
-        { error: "Only PDF documents are supported." },
-        { status: 400 }
+    if (
+      !file.name
+        .toLowerCase()
+        .endsWith(".pdf")
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Only PDF files are supported.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
     if (file.size === 0) {
-      return Response.json(
-        { error: "The uploaded PDF is empty." },
-        { status: 400 }
-      );
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return Response.json(
-        { error: "PDF must be smaller than 10 MB." },
-        { status: 400 }
-      );
-    }
-
-    // --------------------------------------------------------
-    // 3. Convert browser File -> Buffer
-    // --------------------------------------------------------
-
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    console.log("PDF loaded into memory.");
-
-    // --------------------------------------------------------
-    // 4. Extract PDF text
-    // --------------------------------------------------------
-
-    console.log("Extracting PDF text...");
-
-    const parser = new PDFParse({
-      data: buffer,
-    });
-
-    let extracted;
-
-    try {
-      extracted = await parser.getText();
-    } finally {
-      await parser.destroy();
-    }
-
-    const pdfText = extracted.text?.trim() ?? "";
-
-    console.log("Extracted characters:", pdfText.length);
-
-    if (!pdfText) {
-      return Response.json(
+      return NextResponse.json(
         {
+          success: false,
           error:
-            "No readable text was found in this PDF. Scanned/image-only PDFs are not supported yet.",
+            "The PDF is empty.",
         },
-        { status: 400 }
-      );
-    }
-
-    // --------------------------------------------------------
-    // 5. Split document into chunks
-    // --------------------------------------------------------
-
-    const chunks = chunkText(pdfText);
-
-    console.log("Chunks created:", chunks.length);
-
-    if (chunks.length === 0) {
-      return Response.json(
-        { error: "Unable to create chunks from this document." },
-        { status: 400 }
-      );
-    }
-
-    // Protect Vercel from extremely large processing jobs.
-    if (chunks.length > 150) {
-      return Response.json(
         {
-          error:
-            "This PDF contains too much text for the current document limit. Please upload a smaller document.",
-        },
-        { status: 400 }
+          status: 400,
+        }
       );
     }
 
-    // --------------------------------------------------------
-    // 6. Create document record
-    // --------------------------------------------------------
+    if (
+      file.size >
+      MAX_FILE_SIZE
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "PDF must be 10 MB or smaller.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
 
-    const supabase = createAdminClient();
+    console.log(
+      "[PDF] File:",
+      file.name
+    );
 
-    const { data: document, error: documentError } = await supabase
+    console.log(
+      "[PDF] Size:",
+      file.size
+    );
+
+    /* ==================================================
+       3. READ PDF
+    ================================================== */
+
+    console.log(
+      "[PDF] Reading file..."
+    );
+
+    const arrayBuffer =
+      await file.arrayBuffer();
+
+    const pdfData =
+      new Uint8Array(
+        arrayBuffer
+      );
+
+    /* ==================================================
+       4. EXTRACT TEXT
+    ================================================== */
+
+    console.log(
+      "[PDF] Extracting text..."
+    );
+
+    parser =
+      new PDFParse({
+        data: pdfData,
+      });
+
+    const result =
+      await parser.getText();
+
+    const extractedText =
+      String(
+        result.text || ""
+      ).trim();
+
+    console.log(
+      "[PDF] Extracted characters:",
+      extractedText.length
+    );
+
+    if (!extractedText) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "No readable text was found in this PDF. It may be a scanned or image-only document.",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
+    /* ==================================================
+       5. CHUNK DOCUMENT
+    ================================================== */
+
+    console.log(
+      "[RAG] Creating chunks..."
+    );
+
+    const chunks =
+      chunkText(
+        extractedText,
+        1200,
+        200
+      );
+
+    if (!chunks.length) {
+      throw new Error(
+        "Unable to create document chunks."
+      );
+    }
+
+    const finalChunks =
+      chunks.slice(
+        0,
+        MAX_CHUNKS
+      );
+
+    console.log(
+      "[RAG] Chunks:",
+      finalChunks.length
+    );
+
+    /* ==================================================
+       6. CREATE GEMINI EMBEDDINGS
+    ================================================== */
+
+    console.log(
+      "[RAG] Creating Gemini embeddings..."
+    );
+
+    console.log(
+      "[RAG] Embedding model:",
+      EMBEDDING_MODEL
+    );
+
+    const embeddings =
+      await createDocumentEmbeddings(
+        finalChunks,
+        file.name
+      );
+
+    if (
+      embeddings.length !==
+      finalChunks.length
+    ) {
+      throw new Error(
+        "Embedding count does not match chunk count."
+      );
+    }
+
+    console.log(
+      "[RAG] Gemini embeddings completed."
+    );
+
+    /* ==================================================
+       7. SUPABASE
+    ================================================== */
+
+    const supabase =
+      createAdminClient();
+
+    documentId =
+      crypto.randomUUID();
+
+    /* ==================================================
+       8. SAVE DOCUMENT
+    ================================================== */
+
+    console.log(
+      "[RAG] Saving document..."
+    );
+
+    const {
+      error: documentError,
+    } = await supabase
       .from("documents")
       .insert({
-        visitor_id: visitorId.trim(),
-        file_name: file.name,
-        file_size: file.size,
-      })
-      .select("id")
-      .single();
+        id: documentId,
+        visitor_id:
+          visitorId,
+        file_name:
+          file.name,
+        file_size:
+          file.size,
+      });
 
-    if (documentError || !document) {
-      console.error("Document insert error:", documentError);
+    if (documentError) {
+      console.error(
+        "[RAG] DOCUMENT ERROR:",
+        documentError
+      );
 
       throw new Error(
-        documentError?.message || "Unable to create document record."
+        documentError.message
       );
     }
 
-    documentId = document.id;
+    /* ==================================================
+       9. BUILD CHUNK ROWS
+    ================================================== */
 
-    console.log("Document ID:", documentId);
+    const chunkRows =
+      finalChunks.map(
+        (
+          content,
+          index
+        ) => ({
+          id:
+            crypto.randomUUID(),
 
-    // --------------------------------------------------------
-    // 7. Generate embeddings
-    // --------------------------------------------------------
+          document_id:
+            documentId,
 
-    console.log("Generating embeddings...");
+          visitor_id:
+            visitorId,
 
-    const rows = [];
+          content,
 
-    for (let index = 0; index < chunks.length; index++) {
-      const chunk = chunks[index];
+          page_number: 1,
 
-      console.log(
-        `Embedding chunk ${index + 1}/${chunks.length}`
+          chunk_index:
+            index,
+
+          embedding:
+            embeddings[
+            index
+            ],
+        })
       );
 
-      const embedding = await createEmbedding(chunk.content);
+    /* ==================================================
+       10. SAVE CHUNKS
+    ================================================== */
 
-      rows.push({
-        document_id: documentId,
-        visitor_id: visitorId.trim(),
-        content: chunk.content,
-        page_number: null,
-        chunk_index: chunk.chunkIndex,
-        embedding,
-      });
-    }
-
-    console.log("Embeddings generated:", rows.length);
-
-    // --------------------------------------------------------
-    // 8. Save chunks + vectors to Supabase
-    // --------------------------------------------------------
-
-    const BATCH_SIZE = 25;
-
-    for (let start = 0; start < rows.length; start += BATCH_SIZE) {
-      const batch = rows.slice(start, start + BATCH_SIZE);
-
-      const { error: chunkError } = await supabase
-        .from("document_chunks")
-        .insert(batch);
-
-      if (chunkError) {
-        console.error("Chunk insert error:", chunkError);
-        throw new Error(chunkError.message);
-      }
-    }
-
-    console.log("Document chunks saved successfully.");
-
-    console.log("====================================");
-    console.log("MEDHA PDF UPLOAD COMPLETED");
-    console.log("====================================");
-    console.log("");
-
-    // --------------------------------------------------------
-    // 9. Return document information
-    // --------------------------------------------------------
-
-    return Response.json({
-      success: true,
-      document: {
-        id: documentId,
-        fileName: file.name,
-        fileSize: file.size,
-        chunks: chunks.length,
-      },
-    });
-  } catch (error) {
-    console.error("");
-    console.error("====================================");
-    console.error("MEDHA PDF UPLOAD ERROR");
-    console.error("====================================");
-
-    if (error instanceof Error) {
-      console.error("Message:", error.message);
-      console.error("Stack:", error.stack);
-    } else {
-      console.error(error);
-    }
-
-    // If document creation succeeded but something later failed,
-    // remove it. ON DELETE CASCADE removes any inserted chunks.
-    if (documentId) {
-      try {
-        const supabase = createAdminClient();
-
-        await supabase
-          .from("documents")
-          .delete()
-          .eq("id", documentId);
-
-        console.log("Incomplete document cleaned up:", documentId);
-      } catch (cleanupError) {
-        console.error("Document cleanup failed:", cleanupError);
-      }
-    }
-
-    console.error("====================================");
-    console.error("");
-
-    return Response.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Document processing failed.",
-      },
-      { status: 500 }
+    console.log(
+      "[RAG] Saving embeddings to Supabase..."
     );
+
+    const {
+      error: chunksError,
+    } = await supabase
+      .from(
+        "document_chunks"
+      )
+      .insert(
+        chunkRows
+      );
+
+    if (chunksError) {
+      console.error(
+        "[RAG] CHUNK ERROR:",
+        chunksError
+      );
+
+      /*
+       * Remove the parent document
+       * if chunk storage failed.
+       */
+      await supabase
+        .from("documents")
+        .delete()
+        .eq(
+          "id",
+          documentId
+        )
+        .eq(
+          "visitor_id",
+          visitorId
+        );
+
+      throw new Error(
+        chunksError.message
+      );
+    }
+
+    /* ==================================================
+       11. SUCCESS
+    ================================================== */
+
+    console.log(
+      "===================================="
+    );
+
+    console.log(
+      "MEDHA PDF UPLOAD COMPLETED"
+    );
+
+    console.log(
+      "===================================="
+    );
+
+    return NextResponse.json(
+      {
+        success: true,
+
+        document: {
+          id:
+            documentId,
+
+          fileName:
+            file.name,
+
+          fileSize:
+            file.size,
+
+          chunks:
+            finalChunks.length,
+
+          embeddingModel:
+            EMBEDDING_MODEL,
+        },
+      },
+      {
+        status: 200,
+      }
+    );
+  } catch (error) {
+    console.error(
+      "===================================="
+    );
+
+    console.error(
+      "MEDHA PDF UPLOAD ERROR"
+    );
+
+    console.error(
+      "===================================="
+    );
+
+    console.error(error);
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown PDF processing error.";
+
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          `Unable to process PDF: ${message}`,
+      },
+      {
+        status: 500,
+      }
+    );
+  } finally {
+    if (parser) {
+      try {
+        await parser.destroy();
+      } catch (
+      cleanupError
+      ) {
+        console.warn(
+          "[PDF] Cleanup warning:",
+          cleanupError
+        );
+      }
+    }
   }
 }
 
-// ============================================================
-// DELETE DOCUMENT
-// ============================================================
+/* ======================================================
+   DELETE — REMOVE UPLOADED DOCUMENT
+====================================================== */
 
-export async function DELETE(request: Request) {
+export async function DELETE(
+  request: NextRequest
+) {
   console.log("");
-  console.log("====================================");
-  console.log("MEDHA DOCUMENT DELETE STARTED");
-  console.log("====================================");
+  console.log(
+    "===================================="
+  );
+
+  console.log(
+    "MEDHA DOCUMENT DELETE STARTED"
+  );
+
+  console.log(
+    "===================================="
+  );
 
   try {
-    const { searchParams } = new URL(request.url);
+    /* ==================================================
+       1. READ QUERY PARAMETERS
+    ================================================== */
 
-    const documentId = searchParams.get("documentId")?.trim();
-    const visitorId = searchParams.get("visitorId")?.trim();
+    const {
+      searchParams,
+    } = new URL(
+      request.url
+    );
+
+    const documentId =
+      String(
+        searchParams.get(
+          "documentId"
+        ) || ""
+      ).trim();
+
+    const visitorId =
+      String(
+        searchParams.get(
+          "visitorId"
+        ) || ""
+      ).trim();
+
+    /* ==================================================
+       2. VALIDATION
+    ================================================== */
 
     if (!documentId) {
-      return Response.json(
-        { error: "Document ID is required." },
-        { status: 400 }
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "documentId is required.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
     if (!visitorId) {
-      return Response.json(
-        { error: "Visitor ID is required." },
-        { status: 400 }
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "visitorId is required.",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
-    const supabase = createAdminClient();
+    console.log(
+      "[RAG DELETE] Document:",
+      documentId
+    );
 
-    // Verify that this document belongs to this visitor.
-    const { data: document, error: verifyError } = await supabase
+    /* ==================================================
+       3. SUPABASE
+    ================================================== */
+
+    const supabase =
+      createAdminClient();
+
+    /* ==================================================
+       4. VERIFY DOCUMENT
+    ================================================== */
+
+    const {
+      data: document,
+      error:
+      documentLookupError,
+    } = await supabase
       .from("documents")
-      .select("id, file_name")
-      .eq("id", documentId)
-      .eq("visitor_id", visitorId)
+      .select("id")
+      .eq(
+        "id",
+        documentId
+      )
+      .eq(
+        "visitor_id",
+        visitorId
+      )
       .maybeSingle();
 
-    if (verifyError) {
+    if (
+      documentLookupError
+    ) {
       console.error(
-        "Document verification error:",
-        verifyError
+        "[RAG DELETE] LOOKUP ERROR:",
+        documentLookupError
       );
 
-      throw new Error(verifyError.message);
+      throw new Error(
+        documentLookupError.message
+      );
     }
+
+    /*
+     * Deletion is idempotent.
+     *
+     * If the document has already
+     * been removed, the UI can still
+     * safely reset.
+     */
 
     if (!document) {
-      return Response.json(
+      console.log(
+        "[RAG DELETE] Document already removed."
+      );
+
+      return NextResponse.json(
         {
-          error:
-            "Document not found or it does not belong to this visitor.",
+          success: true,
+          deleted: false,
+          alreadyDeleted:
+            true,
+          documentId,
         },
-        { status: 404 }
+        {
+          status: 200,
+        }
       );
     }
 
-    console.log("Deleting document:", document.file_name);
-    console.log("Document ID:", document.id);
+    /* ==================================================
+       5. DELETE CHUNKS
+    ================================================== */
 
-    // document_chunks are automatically removed because
-    // document_chunks.document_id uses ON DELETE CASCADE.
-    const { error: deleteError } = await supabase
+    console.log(
+      "[RAG DELETE] Deleting chunks..."
+    );
+
+    const {
+      error:
+      chunksDeleteError,
+    } = await supabase
+      .from(
+        "document_chunks"
+      )
+      .delete()
+      .eq(
+        "document_id",
+        documentId
+      )
+      .eq(
+        "visitor_id",
+        visitorId
+      );
+
+    if (
+      chunksDeleteError
+    ) {
+      console.error(
+        "[RAG DELETE] CHUNK DELETE ERROR:",
+        chunksDeleteError
+      );
+
+      throw new Error(
+        chunksDeleteError.message
+      );
+    }
+
+    /* ==================================================
+       6. DELETE DOCUMENT
+    ================================================== */
+
+    console.log(
+      "[RAG DELETE] Deleting document record..."
+    );
+
+    const {
+      error:
+      documentDeleteError,
+    } = await supabase
       .from("documents")
       .delete()
-      .eq("id", documentId)
-      .eq("visitor_id", visitorId);
-
-    if (deleteError) {
-      console.error(
-        "Document delete error:",
-        deleteError
+      .eq(
+        "id",
+        documentId
+      )
+      .eq(
+        "visitor_id",
+        visitorId
       );
 
-      throw new Error(deleteError.message);
+    if (
+      documentDeleteError
+    ) {
+      console.error(
+        "[RAG DELETE] DOCUMENT DELETE ERROR:",
+        documentDeleteError
+      );
+
+      throw new Error(
+        documentDeleteError.message
+      );
     }
 
-    console.log("Document deleted successfully.");
-    console.log("Associated chunks deleted by cascade.");
+    /* ==================================================
+       7. SUCCESS
+    ================================================== */
 
-    console.log("====================================");
-    console.log("MEDHA DOCUMENT DELETE COMPLETED");
-    console.log("====================================");
-    console.log("");
+    console.log(
+      "[RAG DELETE] Deleted:",
+      documentId
+    );
 
-    return Response.json({
-      success: true,
-      documentId,
-    });
-  } catch (error) {
-    console.error("");
-    console.error("====================================");
-    console.error("MEDHA DOCUMENT DELETE ERROR");
-    console.error("====================================");
+    console.log(
+      "===================================="
+    );
 
-    if (error instanceof Error) {
-      console.error("Message:", error.message);
-      console.error("Stack:", error.stack);
-    } else {
-      console.error(error);
-    }
+    console.log(
+      "MEDHA DOCUMENT DELETE COMPLETED"
+    );
 
-    console.error("====================================");
-    console.error("");
+    console.log(
+      "===================================="
+    );
 
-    return Response.json(
+    return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unable to delete document.",
+        success: true,
+        deleted: true,
+        documentId,
       },
-      { status: 500 }
+      {
+        status: 200,
+      }
+    );
+  } catch (error) {
+    console.error(
+      "===================================="
+    );
+
+    console.error(
+      "MEDHA DOCUMENT DELETE ERROR"
+    );
+
+    console.error(
+      "===================================="
+    );
+
+    console.error(error);
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unknown document deletion error.";
+
+    return NextResponse.json(
+      {
+        success: false,
+
+        error:
+          `Unable to delete document: ${message}`,
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
